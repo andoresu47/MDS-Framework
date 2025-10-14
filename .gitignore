@@ -1,0 +1,12 @@
+# Ignore all object files
+*.o
+
+# Ignore .vscode config files
+/.vscode/
+
+# Ignore build artifacts
+/build/
+/bin/
+
+# Ignore private local configuration
+/cmake/local.cmake
