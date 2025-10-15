@@ -1,4 +1,4 @@
-#include "toy_powerset_mds.hpp"
+#include "toy_example/toy_powerset_mds.hpp"
 #include <iostream>
 
 int main() {

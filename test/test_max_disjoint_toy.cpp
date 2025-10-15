@@ -1,6 +1,6 @@
 // To run this test only: g++ -std=c++17 -O2 test_main.cpp test_max_disjoint_toy.cpp -I /path/to/boost -I /path/to/include/folder -o mds_toy_tests
 #include <boost/test/unit_test.hpp>
-#include "toy_powerset_mds.hpp"
+#include "toy_example/toy_powerset_mds.hpp"
 
 // Helper: flatten solutions for easy comparison.
 static std::vector<std::vector<std::size_t>>
