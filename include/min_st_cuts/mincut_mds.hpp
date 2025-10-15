@@ -100,4 +100,17 @@ private:
 
     // Topological order of the SCC-DAG (lattice graph) for oracle sweeps.
     std::vector<Vh> topo_;
+
+    // Map SCC id (in G') -> reduced-lattice vertex id [0..n_keep-1] or -1 if pruned
+    std::vector<int> scc_to_lattice_;             
+
+    // For each original edge id (G_[e].id), store (scc(u), scc(v)) in G'
+    std::vector<std::pair<int,int>> edge_scc_pair_;
+
+    // For each original edge id (G_[e].id), true IFF the forward arc (u->v) in G' exists
+    // AND corresponds to a saturated original edge (i.e., f_ij == c_ij)
+    std::vector<char> edge_is_saturated_;
+
+    // For the reduced lattice vertex ids [0..n_keep-1], mark which belong to Succ(S) in H.
+    std::vector<char> reachS_lattice_;
 };
