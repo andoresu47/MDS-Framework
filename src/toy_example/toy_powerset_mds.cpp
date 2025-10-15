@@ -1,64 +1,47 @@
 #include "toy_example/toy_powerset_mds.hpp"
 #include <boost/range/iterator_range.hpp>
-#include <algorithm>
-#include <vector>
 
-// Build a 3-node graph with vertex indices {0,1,2}.
 ToyLattice ToyPowersetMDS::build_initial_lattice() {
-    return ToyLattice(3);
+    ToyLattice g(3);
+    for (auto v : boost::make_iterator_range(vertices(g))) g[v].active = true;
+    return g;
 }
 
-// Return the smallest-index visible vertex as the minimal singleton.
-ToySolution ToyPowersetMDS::O_min(const LatticeView& Lstar) {
+ToySolution ToyPowersetMDS::O_min(ToyLattice& g) {
     ToySolution s;
-    auto FG = Lstar.filtered();
-    for (auto v : boost::make_iterator_range(vertices(FG))) {
-        auto id = get(boost::vertex_index, *Lstar.g, v);
-        s.elems.push_back(static_cast<std::size_t>(id));
-        break; // singleton minimal
+    for (auto v : boost::make_iterator_range(vertices(g))) {
+        if (g[v].active) { s.elems.push_back(static_cast<std::size_t>(v)); break; }
     }
-    return s;
+    return s; // empty if none active
 }
 
-// Return the largest-index visible vertex as the maximal singleton.
-ToySolution ToyPowersetMDS::O_max(const LatticeView& Lstar) {
+ToySolution ToyPowersetMDS::O_max(ToyLattice& g) {
     ToySolution s;
-    auto FG = Lstar.filtered();
     std::size_t last = static_cast<std::size_t>(-1);
-    for (auto v : boost::make_iterator_range(vertices(FG))) {
-        last = get(boost::vertex_index, *Lstar.g, v);
+    for (auto v : boost::make_iterator_range(vertices(g))) {
+        if (g[v].active) last = static_cast<std::size_t>(v);
     }
-    if (last != static_cast<std::size_t>(-1))
-        s.elems.push_back(last);
+    if (last != static_cast<std::size_t>(-1)) s.elems.push_back(last);
     return s;
 }
 
-// Disjoint successors oracle: hide all vertices in S.
-MaxDisjointSolutionsFramework<ToyLattice, ToySolution>::LatticeView
-ToyPowersetMDS::O_ds(const LatticeView& Lstar, const ToySolution& S) {
-    auto next = Lstar.deep_copy();
-    if (next.vmask) {
-        for (auto id : S.elems)
-            if (id < next.vmask->size())
-                (*next.vmask)[id] = 0;
+void ToyPowersetMDS::O_ds(ToyLattice& g, const ToySolution& s) {
+    // Shrink in place: mark chosen elements inactive so future solutions can’t reuse them
+    for (auto id : s.elems) {
+        if (id < num_vertices(g)) g[static_cast<ToyLattice::vertex_descriptor>(id)].active = false;
     }
-    return next;
 }
 
-// Solutions are disjoint if they share no elements.
-bool ToyPowersetMDS::are_disjoint(const ToySolution& A, const ToySolution& B) const {
-    std::vector<std::size_t> a = A.elems, b = B.elems, inter;
-    std::sort(a.begin(), a.end());
-    std::sort(b.begin(), b.end());
-    std::set_intersection(a.begin(), a.end(), b.begin(), b.end(),
-                          std::back_inserter(inter));
+bool ToyPowersetMDS::are_disjoint(const ToySolution& a, const ToySolution& b) const {
+    if (a.elems.empty() || b.elems.empty()) return true;
+    std::vector<std::size_t> x = a.elems, y = b.elems, inter;
+    std::sort(x.begin(), x.end());
+    std::sort(y.begin(), y.end());
+    std::set_intersection(x.begin(), x.end(), y.begin(), y.end(), std::back_inserter(inter));
     return inter.empty();
 }
 
-std::size_t ToyPowersetMDS::view_size(const LatticeView& Lstar) const {
-    return Lstar.count_vertices();
-}
-
-bool ToyPowersetMDS::is_empty(const LatticeView& Lstar) const {
-    return view_size(Lstar) == 0;
+bool ToyPowersetMDS::is_empty(const ToyLattice& g) const {
+    for (auto v : boost::make_iterator_range(vertices(g))) if (g[v].active) return false;
+    return true;
 }
