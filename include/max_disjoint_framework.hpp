@@ -2,6 +2,10 @@
 #include <boost/graph/adjacency_list.hpp>
 #include <boost/graph/filtered_graph.hpp>
 #include <boost/range/iterator_range.hpp>
+#include <boost/graph/graph_traits.hpp>
+#include <boost/property_map/property_map.hpp>
+
+#include <concepts>
 #include <memory>
 #include <vector>
 #include <algorithm>
@@ -26,7 +30,27 @@
 //     (If you don’t filter edges, you may keep emask null and the edge predicate
 //      will accept everything.)
 // -----------------------------------------------------------------------------
+template<class L>
+concept LatticeGraphModel =
+    requires(const L& g,
+             typename boost::graph_traits<L>::vertex_descriptor v,
+             typename boost::graph_traits<L>::edge_descriptor   e)
+{
+    // Basic traversal (we use these directly or via filtered_graph)
+    { vertices(g) };                       // VertexListGraph
+    { edges(g) };                          // EdgeListGraph
+    { out_edges(v, g) };                   // IncidenceGraph
+
+    // Index maps (needed to drive the mask predicates efficiently)
+    { get(boost::vertex_index, g) };       // must have vertex_index_t map on const L
+    { get(boost::edge_index,   g) };       // must have edge_index_t   map on const L
+};
+
+// -----------------------------------------------------------------------------
+// MaxDisjointSolutionsFramework
+// -----------------------------------------------------------------------------
 template<class LatticeGraph, class Solution>
+requires LatticeGraphModel<LatticeGraph>
 class MaxDisjointSolutionsFramework {
 public:
     using L      = LatticeGraph;

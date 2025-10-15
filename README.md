@@ -1,11 +1,9 @@
 # Max-Disjoint Solutions Framework
-This repository provides a generic C++17 framework for computing sets of pairwise disjoint feasible solutions in combinatorial-optimization problems whose feasible sets form a distributive lattice.
+This repository provides a generic C++20 framework for computing sets of pairwise disjoint feasible solutions in combinatorial-optimization problems whose feasible sets form a distributive lattice.
 It implements the general algorithmic scheme of “Max-Disjoint Solutions” introduced in [dBMS25], allowing different optimization problems (e.g., minimum s-t cut & stable matching) to plug into the same high-level interface via three problem-specific oracles. 
 
 ## Overview
-The project defines an extensible base class  
-`MaxDisjointSolutionsFramework<LatticeGraph, Solution>`  
-implemented with the **Boost Graph Library (BGL)**.  
+The project defines an extensible base class `MaxDisjointSolutionsFramework<LatticeGraph, Solution>` implemented with the **Boost Graph Library (BGL)**.  
 
 Each subclass must specify:  
 - **`O_min(L*)`** – returns the minimal solution of the current sublattice `L*`,  
@@ -18,7 +16,7 @@ A lightweight **mask-based sublattice view** built on `boost::filtered_graph` av
 
 Two example subclasses are included:
 - **`ToyPowersetMDS`** – a minimal powerset-based mock problem used for unit testing.  
-- **`MinCutMaxDisjoint`** – a concrete implementation for the *Minimum s-t Cut* problem, demonstrating the framework’s use with real flow computations.
+- **`MinCutMaxDisjoint`** – a concrete implementation for the *Minimum s-t Cut* problem. 
 
 ---
 
