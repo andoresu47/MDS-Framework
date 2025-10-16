@@ -5,6 +5,8 @@
 #include <string>
 #include <cmath>
 #include <cstdlib>
+#include <boost/graph/adjacency_list.hpp>
+#include <boost/graph/graph_traits.hpp>
 
 #include "min_st_cuts/mincut_mds.hpp"
 
@@ -53,8 +55,8 @@ int main(int argc, char** argv) {
         } else {
             long long sc = std::llround(w);
             if (std::fabs(w - static_cast<double>(sc)) > 1e-12) {
-                std::cerr << "Warning: non-integer weight without scale; rounding " << w
-                          << " -> " << sc << "\n";
+                std::cerr << "Warning: non-integer weight without scale; rounding "
+                          << w << " -> " << sc << "\n";
             }
             if (sc < 0) die("negative capacity");
             cap = static_cast<long>(sc);
@@ -63,14 +65,15 @@ int main(int argc, char** argv) {
         auto e = add_edge(u, v, G);
         if (!e.second) die("failed to add edge");
         G[e.first].capacity = cap;
+        // residual & id will be filled by the solver
     }
     if (s >= n || t >= n) die("s or t out of range");
 
-    // Build compact lattice
+    // Build compact lattice (this runs max-flow internally)
     MinCutMaxDisjoint solver(std::move(G), static_cast<Vg>(s), static_cast<Vg>(t));
     LatticeG L = solver.build_initial_lattice();
 
-    // -------- Print reduced lattice in "n' m'\n u v..." format (0-based) --------
+    // ---------------- Print the lattice (SCC DAG) in "n' m'\n u v ..." ----------
     std::size_t LV = num_vertices(L);
     std::size_t LE = num_edges(L);
     std::cout << LV << " " << LE << "\n";
@@ -80,28 +83,55 @@ int main(int argc, char** argv) {
         std::cout << u << " " << v << "\n";
     }
 
-    // -------- Print supernode contents: original vertices grouped by reduced node ----
-    auto orig2reduced = solver.original_to_reduced_map();   // size n, values in [-1..LV-1]
+    // ---------------- Supernode contents (reduced id : original vertices) ---
+    const auto& part = solver.scc_partition();     // |part| == n (original vertices)
     std::vector<std::vector<std::size_t>> groups(LV);
     for (std::size_t v = 0; v < n; ++v) {
-        int r = orig2reduced[v];
-        if (r >= 0) groups[static_cast<std::size_t>(r)].push_back(v);
+        int c = part[v];                           // SCC id in [0..LV-1]
+        if (c >= 0) groups[static_cast<std::size_t>(c)].push_back(v);
     }
 
     std::cout << "# Supernodes (reduced vertex id : original vertices)\n";
     for (std::size_t r = 0; r < LV; ++r) {
         std::cout << r << " :";
+        if (groups[r].empty()) { std::cout << " {}\n"; continue; }
+        std::cout << " {";
         for (std::size_t i = 0; i < groups[r].size(); ++i) {
-            std::cout << (i==0 ? " {" : " ");
             std::cout << groups[r][i];
+            if (i + 1 != groups[r].size()) std::cout << " ";
         }
-        std::cout << (groups[r].empty() ? " {}\n" : "}\n");
+        std::cout << "}\n";
     }
 
-    // -------- (Optional) show one min and one max min-cut for a quick sanity check ----
+    // ---------------- Original graph with *flows* instead of weights --------
+    // flow(u->v) = capacity - residual_forward
+    const MC_G& Gsol = solver.instance();
+    std::size_t N = num_vertices(Gsol);
+    std::size_t M = num_edges(Gsol);
+
+    std::cout << "# Original graph with max-flow per edge (same format as input)\n";
+    std::cout << N << " " << M << " " << s << " " << t << "\n";
+    for (auto e : boost::make_iterator_range(edges(Gsol))) {
+        auto u = static_cast<std::size_t>(boost::source(e, Gsol));
+        auto v = static_cast<std::size_t>(boost::target(e, Gsol));
+        long cap = Gsol[e].capacity;
+        long res = Gsol[e].residual;            // forward residual after maxflow
+        long flow = cap - res;
+        std::cout << u << " " << v << " " << flow << "\n";
+    }
+
+    // print topological order of SCC DAG
+    std::cout << "\n# Topological order of SCC nodes in lattice H\n";
+    const auto& topo = solver.topo_order();
+    for (std::size_t i = 0; i < topo.size(); ++i) {
+        std::cout << topo[i];
+        if (i + 1 != topo.size()) std::cout << " ";
+    }
+    std::cout << "\n";
+
+    // (Optional) sanity cuts
     MinCutSolution Xmin = solver.O_min(L);
     MinCutSolution Xmax = solver.O_max(L);
-
     auto print_cut = [](const char* name, const MinCutSolution& S) {
         std::cout << "# " << name << " cut edge_ids = ";
         if (S.edge_ids.empty()) { std::cout << "{}\n"; return; }

@@ -18,18 +18,19 @@ MinCutMaxDisjoint::MinCutMaxDisjoint(MC_G&& g, Vg s, Vg t)
 // ============================ build_initial_lattice ==============================
 
 LatticeG MinCutMaxDisjoint::build_initial_lattice() {
+    // Find and delete from the input graph all nodes and arcs not on a path from s to t
+    prune_to_st_core();
+
     // (0) Number original edges by id and init per-edge arrays
     std::size_t m = 0;
     for (auto e : boost::make_iterator_range(edges(G_))) G_[e].id = m++;
     edge_scc_pair_.assign(m, {-1,-1});
     edge_is_saturated_.assign(m, 0);
-    edge_active_.assign(m, 1); // all allowed initially
 
-    // (1) Max-flow to fill forward residuals
+    // (1) Max-flow 
     run_maxflow_and_fill_residual();
 
-
-    // (2) Build the "reverse residual" G' as specified (we only need SCCs)
+    // (2) Build the "reverse residual" G'
     using Gprime = boost::adjacency_list<
         boost::vecS, boost::vecS, boost::directedS,
         boost::no_property, 
@@ -59,114 +60,101 @@ LatticeG MinCutMaxDisjoint::build_initial_lattice() {
         Gp, boost::make_iterator_property_map(
                 scc_of_.begin(), get(boost::vertex_index, Gp))
     );
-    scc_S_ = (s_ < scc_of_.size()) ? scc_of_[s_] : -1;
-    scc_T_ = (t_ < scc_of_.size()) ? scc_of_[t_] : -1;
 
-    // Build SCC DAG H
-    using HDAG = boost::adjacency_list<
-        boost::vecS, boost::vecS, boost::directedS, boost::no_property, boost::no_property>;
-    HDAG H(k);
+    // (4) Contract SCC to build compact representation
+    LatticeG H(k);
     for (auto e : boost::make_iterator_range(edges(Gp))) {
         int cu = scc_of_[boost::source(e, Gp)];
         int cv = scc_of_[boost::target(e, Gp)];
         if (cu != cv) add_edge(static_cast<Vh>(cu), static_cast<Vh>(cv), H);
     }
 
-    // Cache per-original-edge (cu,cv) and whether saturated forward exists
-    for (auto e : boost::make_iterator_range(edges(G_))) {
-        std::size_t id = G_[e].id;
-        int cu = scc_of_[boost::source(e, G_)];
-        int cv = scc_of_[boost::target(e, G_)];
-        edge_scc_pair_[id] = {cu, cv};
+    // Mark arcs that correspond to *saturated forward* original edges; fill per-edge caches
+    for (auto ge : boost::make_iterator_range(edges(G_))) {
+        const std::size_t id = G_[ge].id;
+        const int cu = scc_of_[boost::source(ge, G_)];
+        const int cv = scc_of_[boost::target(ge, G_)];
+        const long c  = G_[ge].capacity;
+        const long rf = G_[ge].residual;
+        const long f  = c - rf;
+        const bool is_sat_forward = (f == c);   // saturated forward (u->v)
 
-        long c  = G_[e].capacity;
-        long rf = G_[e].residual;
-        long f  = c - rf;
-        edge_is_saturated_[id] = (f == c) ? 1 : 0;
-    }
+        // Remember this per-original-edge (you already do this elsewhere):
+        edge_scc_pair_[id]     = {cu, cv};
+        edge_is_saturated_[id] = is_sat_forward ? 1 : 0;
 
-    // (4) Prune T and successors; S and predecessors
-    auto bfs_mark = [&](int start, auto& mark, const HDAG& Gdir) {
-        if (start < 0 || start >= k) return;
-        std::queue<int> q; mark.assign(k, 0); mark[start] = 1; q.push(start);
-        while (!q.empty()) {
-            int x = q.front(); q.pop();
-            for (auto ee : boost::make_iterator_range(out_edges(static_cast<Vh>(x), Gdir))) {
-                int y = static_cast<int>(target(ee, Gdir));
-                if (!mark[y]) { mark[y] = 1; q.push(y); }
-            }
+        if (cu != cv && is_sat_forward) {
+            auto [eh, ok] = add_edge(static_cast<Vh>(cu), static_cast<Vh>(cv), H);
+            // Even if the edge already exists, we just set saturated=true.
+            H[eh].saturated = true;
         }
-    };
-
-    std::vector<char> succT(k, 0), predS(k, 0);
-    bfs_mark(scc_T_, succT, H); // successors of T
-
-    // reverse adjacency for predecessors of S
-    std::vector<std::vector<int>> rev(k);
-    for (auto ee : boost::make_iterator_range(edges(H))) {
-        int u = static_cast<int>(boost::source(ee, H));
-        int v = static_cast<int>(boost::target(ee, H));
-        rev[v].push_back(u);
-    }
-    auto bfs_mark_rev = [&](int start, auto& mark) {
-        if (start < 0 || start >= k) return;
-        std::queue<int> q; mark.assign(k, 0); mark[start] = 1; q.push(start);
-        while (!q.empty()) {
-            int x = q.front(); q.pop();
-            for (int y : rev[x]) if (!mark[y]) { mark[y] = 1; q.push(y); }
-        }
-    };
-    bfs_mark_rev(scc_S_, predS);
-
-    // Keep-only mapping
-    scc_to_lattice_.assign(k, -1);
-    int n_keep = 0;
-    for (int v = 0; v < k; ++v) {
-        bool drop = (v == scc_S_) || (v == scc_T_) || succT[v] || predS[v];
-        if (!drop) scc_to_lattice_[v] = n_keep++;
     }
 
-    // Reduced lattice
-    LatticeG L(n_keep);
-    topo_.clear();
-    if (n_keep > 0) {
-        // Project H edges
-        for (auto ee : boost::make_iterator_range(edges(H))) {
-            int u = static_cast<int>(boost::source(ee, H));
-            int v = static_cast<int>(boost::target(ee, H));
-            int nu = scc_to_lattice_[u];
-            int nv = scc_to_lattice_[v];
-            if (nu >= 0 && nv >= 0) add_edge(static_cast<Vh>(nu), static_cast<Vh>(nv), L);
-        }
-        // Topo order
-        std::vector<Vh> revtopo;
-        boost::topological_sort(L, std::back_inserter(revtopo));
-        topo_.assign(revtopo.rbegin(), revtopo.rend());
+    // (5) Topological order + position map over H
+    topo_TS_.clear();
+    {
+        std::vector<Vh> rev;
+        boost::topological_sort(H, std::back_inserter(rev));
+        topo_TS_.assign(rev.rbegin(), rev.rend());
     }
 
-    predS_scc_ = predS;
+    // topo position of every vertex (H’s vertices are 0..k-1)
+    topo_pos_.assign(k, -1);
+    for (int i = 0; i < (int)topo_TS_.size(); ++i) {
+        topo_pos_[ static_cast<int>(topo_TS_[i]) ] = i;
+    }
 
-    return L;
+    // Reset the invalid prefix to “none removed yet”
+    cutoff_ = -1;
+
+    return H;
 }
 
 // ============================ Oracles (in-place) =================================
 
-MinCutSolution MinCutMaxDisjoint::O_min(LatticeG& g) {
-    std::vector<char> in_I(num_vertices(g), 0);
-    build_minimal_ideal(g, in_I);               // empty set in reduced lattice
-    return cut_from_ideal_in_place(in_I);       // δ(I ∪ Pred(S)) using only active & saturated edges
+MinCutSolution MinCutMaxDisjoint::O_min(LatticeG& /*g*/) {
+    std::vector<char> in_I_H;
+    if (!build_current_minimal_ideal_H(in_I_H)) {
+        return MinCutSolution{}; // nothing left
+    }
+    return cut_from_H_ideal(in_I_H);
 }
 
 MinCutSolution MinCutMaxDisjoint::O_max(LatticeG& g) {
-    std::vector<char> in_I(num_vertices(g), 1);
-    build_maximal_ideal(g, in_I);               // all visible reduced-lattice vertices
-    return cut_from_ideal_in_place(in_I);
+    // Find T0’s position
+    const int N = static_cast<int>(topo_TS_.size());
+    const int posT = N - 1;
+
+    // Ideal = all vertices with topo_pos in (cutoff_ .. posT)
+    std::vector<char> in_I_H(topo_TS_.size(), 0);
+    for (int i = 0; i < posT; ++i) {
+        in_I_H[ static_cast<int>(topo_TS_[i]) ] = 1;
+    }
+    
+    return cut_from_H_ideal(in_I_H);
 }
 
-void MinCutMaxDisjoint::O_ds(LatticeG& /*g*/, const MinCutSolution& S) {
-    // Ban used original edges so future cuts are edge-disjoint
-    for (auto id : S.edge_ids)
-        if (id < edge_active_.size()) edge_active_[id] = 0;
+void MinCutMaxDisjoint::O_ds(LatticeG& g, const MinCutSolution& /*X*/) {
+    // Reconstruct current minimal ideal X = { TS[cutoff_+1] }
+    std::vector<char> in_X;
+    if (!build_current_minimal_ideal_H(in_X))
+        return;
+
+    int furthest = cutoff_;
+
+    // For each u in X, examine *saturated* out-edges u->v in the lattice and push cutoff
+    for (std::size_t idx = 0; idx < in_X.size(); ++idx) {
+        if (!in_X[idx]) continue;
+        const Vh u = static_cast<Vh>(idx);
+        for (auto eh : boost::make_iterator_range(out_edges(u, g))) {
+            if (!g[eh].saturated) continue;
+            const Vh v = target(eh, g);
+            furthest = std::max(furthest, topo_pos_[ static_cast<int>(v) ]);
+        }
+    }
+
+    // Invalidate prefix up to and including 'furthest'
+    cutoff_ = furthest;
 }
 
 // ============================ Disjointness / Emptiness ===========================
@@ -181,55 +169,107 @@ bool MinCutMaxDisjoint::are_disjoint(const MinCutSolution& A,
 }
 
 bool MinCutMaxDisjoint::is_empty(const LatticeG& /*g*/) const {
-    // No available original edges => cannot form new edge-disjoint cuts
-    return std::none_of(edge_active_.begin(), edge_active_.end(),
-                        [](char x){ return x!=0; }) ;
+    // No valid vertex remains in the TS suffix
+    return (cutoff_ + 1) >= static_cast<int>(topo_TS_.size());
 }
 
 // ============================ Helpers ============================================
 
-void MinCutMaxDisjoint::build_minimal_ideal(LatticeG& /*g*/,
-                                            std::vector<char>& in_I) const {
-    // Minimal ideal is the empty set in the reduced lattice
-    std::fill(in_I.begin(), in_I.end(), 0);
+// Keep only vertices reachable from s AND that can reach t; rebuild G_ compactly.
+void MinCutMaxDisjoint::prune_to_st_core() {
+    const std::size_t n = num_vertices(G_);
+    if (n == 0) return;
+
+    // forward reachability from s
+    std::vector<char> reachS(n, 0);
+    {
+        std::queue<Vg> q;
+        reachS[s_] = 1; q.push(s_);
+        while (!q.empty()) {
+            Vg u = q.front(); q.pop();
+            for (auto e : boost::make_iterator_range(out_edges(u, G_))) {
+                Vg v = target(e, G_);
+                if (!reachS[v]) { reachS[v] = 1; q.push(v); }
+            }
+        }
+    }
+
+    // backward reachability to t (walk in-edges)
+    std::vector<char> reachT(n, 0);
+    {
+        std::queue<Vg> q;
+        reachT[t_] = 1; q.push(t_);
+        while (!q.empty()) {
+            Vg v = q.front(); q.pop();
+            for (auto e : boost::make_iterator_range(in_edges(v, G_))) {
+                Vg u = boost::source(e, G_);
+                if (!reachT[u]) { reachT[u] = 1; q.push(u); }
+            }
+        }
+    }
+
+    // map old -> new ids for s–t core
+    std::vector<int> old2new(n, -1);
+    int nn = 0;
+    for (std::size_t u = 0; u < n; ++u)
+        if (reachS[u] && reachT[u]) old2new[u] = nn++;
+
+    // already core-only?
+    if ((int)n == nn) return;
+
+    // rebuild compact graph
+    MC_G Gnew(nn);
+    Vg s_new = static_cast<Vg>(old2new[s_]);
+    Vg t_new = static_cast<Vg>(old2new[t_]);
+
+    for (auto e : boost::make_iterator_range(edges(G_))) {
+        Vg u = boost::source(e, G_);
+        Vg v = boost::target(e, G_);
+        int nu = old2new[u], nv = old2new[v];
+        if (nu >= 0 && nv >= 0) {
+            auto ee = add_edge(static_cast<Vg>(nu), static_cast<Vg>(nv), Gnew);
+            if (ee.second) Gnew[ee.first].capacity = G_[e].capacity;
+        }
+    }
+
+    // swap in pruned graph & terminals
+    G_.swap(Gnew);
+    s_ = s_new;
+    t_ = t_new;
 }
 
-void MinCutMaxDisjoint::build_maximal_ideal(LatticeG& g,
-                                            std::vector<char>& in_I) const {
-    // All current reduced-lattice vertices (we aren't deactivating lattice vertices here)
-    std::fill(in_I.begin(), in_I.end(), 1);
-    (void)g;
-}
-
-MinCutSolution MinCutMaxDisjoint::cut_from_ideal_in_place(const std::vector<char>& in_I) const {
+// Extract saturated forward boundary of an ideal over SCC DAG using per-original-edge caches.
+MinCutSolution MinCutMaxDisjoint::cut_from_H_ideal(const std::vector<char>& in_I_H) const {
     MinCutSolution S;
-    S.edge_ids.reserve(edge_scc_pair_.size()/8);
+    S.edge_ids.reserve(edge_scc_pair_.size() / 8);
 
-    for (std::size_t id = 0; id < edge_scc_pair_.size(); ++id) {
-        if (!edge_active_[id])      continue;   // banned
-        if (!edge_is_saturated_[id]) continue;  // must be saturated forward arc
-
+    const std::size_t M = edge_scc_pair_.size();
+    for (std::size_t id = 0; id < M; ++id) {
+        if (!edge_is_saturated_[id]) continue;
         auto [cu, cv] = edge_scc_pair_[id];
         if (cu < 0 || cv < 0) continue;
 
-        int nu = (cu < (int)scc_to_lattice_.size() ? scc_to_lattice_[cu] : -1);
-        int nv = (cv < (int)scc_to_lattice_.size() ? scc_to_lattice_[cv] : -1);
-        if (nu < 0 || nv < 0) continue;         // pruned endpoints
+        const bool tail_in = (cu < (int)in_I_H.size() && in_I_H[(std::size_t)cu]);
+        const bool head_in = (cv < (int)in_I_H.size() && in_I_H[(std::size_t)cv]);
 
-        const bool tail_in =
-            (cu < (int)predS_scc_.size() && predS_scc_[cu]) ||
-            (nu >= 0 && (std::size_t)nu < in_I.size() && in_I[nu]);
-
-        const bool head_in =
-            (cv < (int)predS_scc_.size() && predS_scc_[cv]) ||
-            (nv >= 0 && (std::size_t)nv < in_I.size() && in_I[nv]);
-
-        if (tail_in && !head_in) S.edge_ids.push_back(id);
+        if (tail_in && !head_in)
+            S.edge_ids.push_back(id);
     }
 
     std::sort(S.edge_ids.begin(), S.edge_ids.end());
     S.edge_ids.erase(std::unique(S.edge_ids.begin(), S.edge_ids.end()), S.edge_ids.end());
     return S;
+}
+
+// Build the *current* minimal ideal over H as the singleton { TS[cutoff_+1] }.
+// Return false if no valid nodes remain.
+bool MinCutMaxDisjoint::build_current_minimal_ideal_H(std::vector<char>& in_I_H) const {
+    const int N = static_cast<int>(topo_TS_.size());
+    const int first = cutoff_ + 1;
+    if (first >= N) return false;
+    in_I_H.assign(topo_pos_.size(), 0);
+    in_I_H[ static_cast<int>(topo_TS_[first]) ] = 1;
+    return true;
 }
 
 // --- Max-flow that fills G_[e].residual on forward arcs ---------------------------
@@ -297,14 +337,4 @@ void MinCutMaxDisjoint::run_maxflow_and_fill_residual() {
         Eg ge = wridx2ge[idx];
         G_[ge].residual = get(res_map, ewr);
     }
-}
-
-std::vector<int> MinCutMaxDisjoint::original_to_reduced_map() const {
-    std::vector<int> out(num_vertices(G_), -1);
-    for (std::size_t v = 0; v < out.size(); ++v) {
-        int cu = (v < scc_of_.size() ? scc_of_[v] : -1);
-        if (cu >= 0 && cu < (int)scc_to_lattice_.size())
-            out[v] = scc_to_lattice_[cu];   // -1 if pruned
-    }
-    return out;
 }
