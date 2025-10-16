@@ -131,7 +131,8 @@ int main(int argc, char** argv) {
 
     // (Optional) sanity cuts
     MinCutSolution Xmin = solver.O_min(L);
-    MinCutSolution Xmax = solver.O_max(L);
+    solver.O_ds(L, Xmin);
+    MinCutSolution Xmax = solver.O_min(L);
     auto print_cut = [](const char* name, const MinCutSolution& S) {
         std::cout << "# " << name << " cut edge_ids = ";
         if (S.edge_ids.empty()) { std::cout << "{}\n"; return; }

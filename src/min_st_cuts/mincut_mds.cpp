@@ -1,5 +1,5 @@
 #include "min_st_cuts/mincut_mds.hpp"
-
+#include <iostream>
 #include <boost/range/iterator_range.hpp>
 #include <boost/graph/strong_components.hpp>
 #include <boost/graph/topological_sort.hpp>
@@ -154,7 +154,7 @@ void MinCutMaxDisjoint::O_ds(LatticeG& g, const MinCutSolution& /*X*/) {
     }
 
     // Invalidate prefix up to and including 'furthest'
-    cutoff_ = furthest;
+    cutoff_ = furthest - 1;
 }
 
 // ============================ Disjointness / Emptiness ===========================
@@ -266,9 +266,12 @@ MinCutSolution MinCutMaxDisjoint::cut_from_H_ideal(const std::vector<char>& in_I
 bool MinCutMaxDisjoint::build_current_minimal_ideal_H(std::vector<char>& in_I_H) const {
     const int N = static_cast<int>(topo_TS_.size());
     const int first = cutoff_ + 1;
-    if (first >= N) return false;
+    // Ideal = all vertices with topo_pos in (0 .. cutoff_)
     in_I_H.assign(topo_pos_.size(), 0);
-    in_I_H[ static_cast<int>(topo_TS_[first]) ] = 1;
+    if (first >= N) return false;
+    for (int i = 0; i <= first; ++i) {
+        in_I_H[ static_cast<int>(topo_TS_[i]) ] = 1;
+    }
     return true;
 }
 
