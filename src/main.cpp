@@ -5,6 +5,7 @@
 #include <string>
 #include <cmath>
 #include <cstdlib>
+#include <iomanip> 
 #include <boost/graph/adjacency_list.hpp>
 #include <boost/graph/graph_traits.hpp>
 
@@ -71,80 +72,63 @@ int main(int argc, char** argv) {
 
     // Build compact lattice (this runs max-flow internally)
     MinCutMaxDisjoint solver(std::move(G), static_cast<Vg>(s), static_cast<Vg>(t));
-    LatticeG L = solver.build_initial_lattice();
+    LatticeG L = solver.build_initial_lattice();  
 
-    // ---------------- Print the lattice (SCC DAG) in "n' m'\n u v ..." ----------
-    std::size_t LV = num_vertices(L);
-    std::size_t LE = num_edges(L);
-    std::cout << LV << " " << LE << "\n";
-    for (auto e : boost::make_iterator_range(edges(L))) {
-        auto u = static_cast<std::size_t>(source(e, L));
-        auto v = static_cast<std::size_t>(target(e, L));
-        std::cout << u << " " << v << "\n";
-    }
+    std::cout << "# Finding max-disjoint minimum s–t cuts...\n";
+    auto cuts = solver.find_max_disjoint();
+    std::cout << "Number of disjoint min-cuts found: " << cuts.size() << "\n";
 
-    // ---------------- Supernode contents (reduced id : original vertices) ---
-    const auto& part = solver.scc_partition();     // |part| == n (original vertices)
-    std::vector<std::vector<std::size_t>> groups(LV);
-    for (std::size_t v = 0; v < n; ++v) {
-        int c = part[v];                           // SCC id in [0..LV-1]
-        if (c >= 0) groups[static_cast<std::size_t>(c)].push_back(v);
-    }
-
-    std::cout << "# Supernodes (reduced vertex id : original vertices)\n";
-    for (std::size_t r = 0; r < LV; ++r) {
-        std::cout << r << " :";
-        if (groups[r].empty()) { std::cout << " {}\n"; continue; }
-        std::cout << " {";
-        for (std::size_t i = 0; i < groups[r].size(); ++i) {
-            std::cout << groups[r][i];
-            if (i + 1 != groups[r].size()) std::cout << " ";
-        }
-        std::cout << "}\n";
-    }
-
-    // ---------------- Original graph with *flows* instead of weights --------
-    // flow(u->v) = capacity - residual_forward
+    // Build an edge-descriptor lookup by id for cost lookup and pretty printing
     const MC_G& Gsol = solver.instance();
-    std::size_t N = num_vertices(Gsol);
-    std::size_t M = num_edges(Gsol);
-
-    std::cout << "# Original graph with max-flow per edge (same format as input)\n";
-    std::cout << N << " " << M << " " << s << " " << t << "\n";
+    std::vector<Eg> edge_by_id(num_edges(Gsol));
     for (auto e : boost::make_iterator_range(edges(Gsol))) {
-        auto u = static_cast<std::size_t>(boost::source(e, Gsol));
-        auto v = static_cast<std::size_t>(boost::target(e, Gsol));
-        long cap = Gsol[e].capacity;
-        long res = Gsol[e].residual;            // forward residual after maxflow
-        long flow = cap - res;
-        std::cout << u << " " << v << " " << flow << "\n";
+        std::size_t id = Gsol[e].id;
+        if (id < edge_by_id.size())
+            edge_by_id[id] = e;
     }
 
-    // print topological order of SCC DAG
-    std::cout << "\n# Topological order of SCC nodes in lattice H\n";
-    const auto& topo = solver.topo_order();
-    for (std::size_t i = 0; i < topo.size(); ++i) {
-        std::cout << topo[i];
-        if (i + 1 != topo.size()) std::cout << " ";
-    }
-    std::cout << "\n";
+    int idx = 1;
+    for (const auto& sol : cuts) {
+        long total_cost_int = 0;  // integer cost (scaled)
+        std::cout << "Cut " << idx++ << ": ";
 
-    // (Optional) sanity cuts
-    MinCutSolution Xmin = solver.O_min(L);
-    solver.O_ds(L, Xmin);
-    MinCutSolution Xmax = solver.O_min(L);
-    auto print_cut = [](const char* name, const MinCutSolution& S) {
-        std::cout << "# " << name << " cut edge_ids = ";
-        if (S.edge_ids.empty()) { std::cout << "{}\n"; return; }
-        std::cout << "{";
-        for (std::size_t i = 0; i < S.edge_ids.size(); ++i) {
-            std::cout << S.edge_ids[i];
-            if (i + 1 != S.edge_ids.size()) std::cout << ", ";
+        // Print both edge ids and (u→v)[cap] form
+        if (sol.edge_ids.empty()) {
+            std::cout << "{}  (cost = 0)\n";
+            continue;
         }
-        std::cout << "}\n";
-    };
-    print_cut("O_min", Xmin);
-    print_cut("O_max", Xmax);
+
+        // Pretty list
+        std::cout << "{ ";
+        for (std::size_t i = 0; i < sol.edge_ids.size(); ++i) {
+            auto eid = sol.edge_ids[i];
+            std::cout << eid;
+            if (i + 1 != sol.edge_ids.size()) std::cout << " ";
+        }
+        std::cout << " }   ";
+
+        // Expanded edges and cost
+        std::cout << "[ ";
+        for (auto eid : sol.edge_ids) {
+            if (eid < edge_by_id.size()) {
+                auto e = edge_by_id[eid];
+                auto uu = static_cast<std::size_t>(source(e, Gsol));
+                auto vv = static_cast<std::size_t>(target(e, Gsol));
+                long cap = Gsol[e].capacity;
+                total_cost_int += cap;
+                std::cout << "(" << uu << "->" << vv << ")[" << cap << "] ";
+            }
+        }
+        std::cout << "]";
+
+        // If you scaled inputs, divide to print real cost; else print integer
+        if (scale != 1.0) {
+            double total_cost = static_cast<double>(total_cost_int) / scale;
+            std::cout << "  (cost = " << std::fixed << std::setprecision(6) << total_cost << ")\n";
+        } else {
+            std::cout << "  (cost = " << total_cost_int << ")\n";
+        }
+    }
 
     return 0;
 }
