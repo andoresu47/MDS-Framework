@@ -98,9 +98,8 @@ LatticeG MinCutMaxDisjoint::build_initial_lattice() {
         }
     };
 
-    std::vector<char> succT(k, 0), succS(k, 0), predS(k, 0);
+    std::vector<char> succT(k, 0), predS(k, 0);
     bfs_mark(scc_T_, succT, H); // successors of T
-    bfs_mark(scc_S_, succS, H); // successors of S
 
     // reverse adjacency for predecessors of S
     std::vector<std::vector<int>> rev(k);
@@ -145,12 +144,7 @@ LatticeG MinCutMaxDisjoint::build_initial_lattice() {
         topo_.assign(revtopo.rbegin(), revtopo.rend());
     }
 
-    // Project Succ(S) to reduced lattice
-    reachS_lattice_.assign(n_keep, 0);
-    for (int old = 0; old < k; ++old) {
-        int nv = scc_to_lattice_[old];
-        if (nv >= 0 && succS[old]) reachS_lattice_[nv] = 1;
-    }
+    predS_scc_ = predS;
 
     return L;
 }
@@ -160,7 +154,7 @@ LatticeG MinCutMaxDisjoint::build_initial_lattice() {
 MinCutSolution MinCutMaxDisjoint::O_min(LatticeG& g) {
     std::vector<char> in_I(num_vertices(g), 0);
     build_minimal_ideal(g, in_I);               // empty set in reduced lattice
-    return cut_from_ideal_in_place(in_I);       // δ(I ∪ Succ(S)) using only active & saturated edges
+    return cut_from_ideal_in_place(in_I);       // δ(I ∪ Pred(S)) using only active & saturated edges
 }
 
 MinCutSolution MinCutMaxDisjoint::O_max(LatticeG& g) {
@@ -222,10 +216,13 @@ MinCutSolution MinCutMaxDisjoint::cut_from_ideal_in_place(const std::vector<char
         int nv = (cv < (int)scc_to_lattice_.size() ? scc_to_lattice_[cv] : -1);
         if (nu < 0 || nv < 0) continue;         // pruned endpoints
 
-        const bool tail_in = ((std::size_t)nu < in_I.size() && in_I[nu]) ||
-                             (nu < (int)reachS_lattice_.size() && reachS_lattice_[nu]);
-        const bool head_in = ((std::size_t)nv < in_I.size() && in_I[nv]) ||
-                             (nv < (int)reachS_lattice_.size() && reachS_lattice_[nv]);
+        const bool tail_in =
+            (cu < (int)predS_scc_.size() && predS_scc_[cu]) ||
+            (nu >= 0 && (std::size_t)nu < in_I.size() && in_I[nu]);
+
+        const bool head_in =
+            (cv < (int)predS_scc_.size() && predS_scc_[cv]) ||
+            (nv >= 0 && (std::size_t)nv < in_I.size() && in_I[nv]);
 
         if (tail_in && !head_in) S.edge_ids.push_back(id);
     }
@@ -300,4 +297,14 @@ void MinCutMaxDisjoint::run_maxflow_and_fill_residual() {
         Eg ge = wridx2ge[idx];
         G_[ge].residual = get(res_map, ewr);
     }
+}
+
+std::vector<int> MinCutMaxDisjoint::original_to_reduced_map() const {
+    std::vector<int> out(num_vertices(G_), -1);
+    for (std::size_t v = 0; v < out.size(); ++v) {
+        int cu = (v < scc_of_.size() ? scc_of_[v] : -1);
+        if (cu >= 0 && cu < (int)scc_to_lattice_.size())
+            out[v] = scc_to_lattice_[cu];   // -1 if pruned
+    }
+    return out;
 }

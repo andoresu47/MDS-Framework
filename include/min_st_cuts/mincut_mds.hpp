@@ -62,11 +62,15 @@ public:
     Vg          source()   const { return s_; }
     Vg          sink()     const { return t_; }
 
+    // Map each original vertex (0..n-1) to its reduced-lattice vertex id [0..|L|-1],
+    // or -1 if that vertex’s SCC was pruned during step 4.
+    std::vector<int> original_to_reduced_map() const;
+
 private:
     // Max-flow helper
     void run_maxflow_and_fill_residual();
 
-    // Ideal builders over the current lattice (no masks)
+    // Ideal builders over the current lattice
     void build_minimal_ideal (LatticeG& g, std::vector<char>& in_I) const;
     void build_maximal_ideal (LatticeG& g, std::vector<char>& in_I) const;
 
@@ -86,8 +90,8 @@ private:
     // SCC id in G' -> reduced lattice vertex id [0..n_keep) or -1 if pruned
     std::vector<int> scc_to_lattice_;
 
-    // For reduced lattice vertex ids, mark those in Succ(S) in the SCC DAG
-    std::vector<char> reachS_lattice_;
+    // For reduced lattice vertex ids, mark those in Pred(S) in the SCC DAG
+    std::vector<char> predS_scc_;
 
     // For each original edge id: (scc(u), scc(v)) in G'
     std::vector<std::pair<int,int>> edge_scc_pair_;
