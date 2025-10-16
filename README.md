@@ -12,8 +12,6 @@ Each subclass must specify:
 
 The framework then executes the generic Max-Disjoint algorithm—iteratively selecting minimal solutions and shrinking the current sublattice—until no further disjoint solutions exist.
 
-A lightweight **mask-based sublattice view** built on `boost::filtered_graph` avoids copying graphs between iterations.
-
 Two example subclasses are included:
 - **`ToyPowersetMDS`** – a minimal powerset-based mock problem used for unit testing.  
 - **`MinCutMaxDisjoint`** – a concrete implementation for the *Minimum s-t Cut* problem. 
@@ -30,6 +28,8 @@ Two example subclasses are included:
 │       └── mds_framework_unit_tests    # Built unit tests executable
 ├── cmake/                              # Folder for cmake configuration files
 │   └── local.cmake                     # File with local env variables (e.g., Boost path)
+├── include/                            # Folder for all header files
+├── input/                              # Folder for some test input files
 ├── src/                                # Folder for all source files
 │   └── main.cpp                        # Main entry of the application
 ├── test/                               # Test folder for all unit tests
@@ -39,8 +39,8 @@ Two example subclasses are included:
 
 ## Requirements
 - **CMake ≥ 3.22**
-- **C++17-compatible compiler** 
-- **Boost ≥ 1.75** (header-only components suffice)
+- **C++20-compatible compiler** 
+- **Boost ≥ 1.89** (header-only components suffice)
 
 ## Building
 From the project root
@@ -73,5 +73,5 @@ To add a new problem **X**:
 3. Compile and test using the same CMake structure.
 
 ## References
-[dBMS25]- Mark de Berg, Andrés López Martínez, and Frits Spieksma. *Finding diverse solutions in
+[dBMS25] - Mark de Berg, Andrés López Martínez, and Frits Spieksma. *Finding diverse solutions in
 combinatorial problems with a distributive lattice structure*, 2025. URL: [https://arxiv.org/abs/2504.02369](https://arxiv.org/abs/2504.02369) — *arXiv:2504.02369*. 
