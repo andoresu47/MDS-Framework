@@ -1,3 +1,40 @@
+/**
+ * @file mincut_mds.cpp
+ * @brief Implementation of MinCutMaxDisjoint: builds the lattice of minimum s–t cuts
+ *        from a max-flow instance, and implements the oracles used by the
+ *        MaxDisjointSolutionsFramework.
+ *
+ * High-level pipeline in build_initial_lattice():
+ *   1) prune_to_st_core(): keep only vertices/edges on some s→t path.
+ *   2) Number original edges with stable ids; init per-edge caches.
+ *   3) run_maxflow_and_fill_residual(): compute max-flow and write forward residuals.
+ *   4) Build "reverse residual" graph G' according to the specific rule:
+ *        - if 0 < f < c: add (v→u) with c−f and (u→v) with f
+ *        - if f == c:    add (u→v) with f
+ *        - if f == 0:    add (v→u) with c
+ *   5) Compute SCCs of G', and contract them into an SCC-DAG H (the lattice representation).
+ *   6) Mark H-edges that correspond to saturated original edges; fill caches that
+ *      map each original edge to the pair (SCC(u), SCC(v)) and whether it is saturated.
+ *   7) Compute a topological order of H and cache position indices.
+ *   8) Reset the oracle’s cutoff_ (the invalid prefix in topo order).
+ * 
+ *  Note: build_initial_lattice() might be moved to its own independent implementation. 
+ *
+ * Oracles:
+ *   - O_min():    returns the current minimal ideal (as a bitvector over SCCs).
+ *   - O_max():    returns the maximal ideal in H \ {SCC containing t}.
+ *   - O_ds(X):    advances cutoff_ by looking at saturated out-edges from X to ensure
+ *                 future ideals are disjoint from X’s induced cut.
+ * 
+ * Helpers:
+ *   - are_disjoint(): checks edge-disjointness by converting ideals to cuts and intersecting.
+ *   - is_empty(): true iff cutoff_ invalidates all remaining topo positions.
+ *
+ * Conversion:
+ *   - convert_to_solution_space(): maps a list of ideals to the corresponding min-cuts
+ *     (edge-id sets) using cut_from_H_ideal().
+ */
+
 #include "min_st_cuts/mincut_mds.hpp"
 #include <iostream>
 #include <boost/range/iterator_range.hpp>
@@ -7,30 +44,53 @@
 #include <algorithm>
 #include <queue>
 
-// ============================ ctors =============================================
-
+/**
+ * @brief Copy-construct the solver from an input graph and terminals.
+ * @param g Input graph (copied).
+ * @param s Source vertex (descriptor within g).
+ * @param t Sink vertex (descriptor within g).
+ */
 MinCutMaxDisjoint::MinCutMaxDisjoint(const MC_G& g, Vg s, Vg t)
     : G_(g), s_(s), t_(t) {}
 
+/**
+ * @brief Move-construct the solver from an input graph and terminals.
+ * @param g Input graph (moved).
+ * @param s Source vertex (descriptor within g).
+ * @param t Sink vertex (descriptor within g).
+ */
 MinCutMaxDisjoint::MinCutMaxDisjoint(MC_G&& g, Vg s, Vg t)
     : G_(std::move(g)), s_(s), t_(t) {}
 
-// ============================ build_initial_lattice ==============================
-
+/**
+ * @brief Build the compact lattice representation (SCC-DAG H) inside the solver.
+ *
+ * Steps:
+ *  1) Prune G_ to the s–t core.
+ *  2) Number edges; initialize caches.
+ *  3) Run max-flow and fill forward residuals G_[e].residual.
+ *  4) Construct reverse-residual graph G' using the specified rules.
+ *  5) Compute SCCs of G' and their condensation DAG H.
+ *  6) Mark which H-edges correspond to saturated original edges and fill per-edge caches.
+ *  7) Compute a topological order topo_TS_ and the index map topo_pos_.
+ *  8) Reset cutoff_ to “empty invalid prefix”.
+ *
+ * @return The built SCC-DAG H (stored in the framework’s lattice_ by the parent class' algorithm).
+ */
 LatticeDAG MinCutMaxDisjoint::build_initial_lattice() {
-    // Find and delete from the input graph all nodes and arcs not on a path from s to t
+    // Keep only vertices/edges on some s-t path.
     prune_to_st_core();
 
-    // (0) Number original edges by id and init per-edge arrays
+    // Number original edges by id and init per-edge arrays
     std::size_t m = 0;
     for (auto e : boost::make_iterator_range(edges(G_))) G_[e].id = m++;
     edge_scc_pair_.assign(m, {-1,-1});
     edge_is_saturated_.assign(m, 0);
 
-    // (1) Max-flow 
+    // Max-flow (fills G_[e].residual on forward arcs)
     run_maxflow_and_fill_residual();
 
-    // (2) Build the "reverse residual" G'
+    // Build the "reverse residual" graph G'
     using Gprime = boost::adjacency_list<
         boost::vecS, boost::vecS, boost::directedS,
         boost::no_property, 
@@ -54,14 +114,14 @@ LatticeDAG MinCutMaxDisjoint::build_initial_lattice() {
         else /* f==0 */      { add_arc(v,u, c); }
     }
 
-    // (3) SCCs on G'
+    // SCCs on G'
     scc_of_.assign(num_vertices(Gp), -1);
     int k = boost::strong_components(
         Gp, boost::make_iterator_property_map(
                 scc_of_.begin(), get(boost::vertex_index, Gp))
     );
 
-    // (4) Contract SCC to build compact representation
+    // Contract SCC to build compact representation H
     LatticeDAG H(k);
     for (auto e : boost::make_iterator_range(edges(Gp))) {
         int cu = scc_of_[boost::source(e, Gp)];
@@ -69,7 +129,8 @@ LatticeDAG MinCutMaxDisjoint::build_initial_lattice() {
         if (cu != cv) add_edge(static_cast<Vh>(cu), static_cast<Vh>(cv), H);
     }
 
-    // Mark arcs that correspond to *saturated forward* original edges; fill per-edge caches
+    // Mark in H edges that correspond to saturated forward original edges;
+    // also fill per-edge caches mapping original edge id → (SCC(u), SCC(v)) plus saturation bit. 
     for (auto ge : boost::make_iterator_range(edges(G_))) {
         const std::size_t id = G_[ge].id;
         const int cu = scc_of_[boost::source(ge, G_)];
@@ -90,7 +151,7 @@ LatticeDAG MinCutMaxDisjoint::build_initial_lattice() {
         }
     }
 
-    // (5) Topological order + position map over H
+    // Topological order + position map over H
     topo_TS_.clear();
     {
         std::vector<Vh> rev;
@@ -98,28 +159,56 @@ LatticeDAG MinCutMaxDisjoint::build_initial_lattice() {
         topo_TS_.assign(rev.rbegin(), rev.rend());
     }
 
-    // topo position of every vertex (H’s vertices are 0..k-1)
+     // Position of each SCC vertex in topo_TS_
     topo_pos_.assign(k, -1);
     for (int i = 0; i < (int)topo_TS_.size(); ++i) {
         topo_pos_[ static_cast<int>(topo_TS_[i]) ] = i;
     }
 
-    // Reset the invalid prefix to “none removed yet”
+    // Reset invalid prefix: no elements have been excluded yet.
     cutoff_ = -1;
 
-    return H;
+    return H;   // Framework will store this in lattice_
 }
 
-// ============================ Oracles (in-place) =================================
+// -------------------------------------------------------------------------
+// Framework subroutines
+// -------------------------------------------------------------------------
 
+/**
+ * @brief Return the current minimal ideal as a bitvector over SCC vertices.
+ *
+ * Convention used here:
+ *   - topo_TS_ is a forward topological order of H.
+ *   - cutoff_ marks an "invalid prefix" [0..cutoff_-1]; the first valid index is cutoff_+1.
+ *   - This implementation returns an ideal that includes all vertices up to index `first`,
+ *     where `first = cutoff_ + 1`. (I.e., a prefix-closed downset.)
+ *
+ * @return Ideal bitvector; empty if nothing remains.
+ */
 Ideal MinCutMaxDisjoint::O_min() {
-    Ideal I;
-    if (!build_current_minimal_ideal_H(I)) {
-        return Ideal{}; // nothing left
+    const int N = static_cast<int>(topo_TS_.size());
+    const int first = cutoff_ + 1;
+
+    // Ideal = all vertices with topo_pos in (0 .. cutoff_)
+    Ideal I(topo_TS_.size(), 0);
+    if (first >= N) return Ideal{}; // nothing left
+    for (int i = 0; i <= first; ++i) {
+        I[ static_cast<int>(topo_TS_[i]) ] = 1;
     }
     return I;
 }
 
+/**
+ * @brief Return the maximal ideal.
+ *
+ * Convention used here:
+ *   - Treat the last topo position as T0 (sink-side component).
+ *   - Build an ideal that includes SCCs up to (but excluding) T0.
+ *   - This produces a large downset (prefix before the last vertex).
+ *
+ * @return Ideal bitvector representing the maximal ideal.
+ */
 Ideal MinCutMaxDisjoint::O_max() {
     // Find T0’s position
     const int N = static_cast<int>(topo_TS_.size());
@@ -134,6 +223,19 @@ Ideal MinCutMaxDisjoint::O_max() {
     return I;
 }
 
+/**
+ * @brief Disjoint-successor oracle: advance cutoff_ using saturated out-edges of X.
+ *
+ * Intuition:
+ *   - The min-cut induced by ideal X uses saturated boundary edges u→v with u in X, v not in X.
+ *   - Any future ideal that includes such v (or earlier in topo) could reuse those edges,
+ *     violating edge-disjointness.
+ *   - We scan all saturated out-edges from vertices in X and compute the furthest topo index
+ *     among their targets. Then we invalidate (exclude) the prefix up to that position by
+ *     setting cutoff_ accordingly.
+ *
+ * @param X Ideal over SCC vertices (bitvector).
+ */
 void MinCutMaxDisjoint::O_ds(const Ideal& X) {
     LatticeDAG& g = lattice_;
     int furthest = cutoff_;
@@ -149,12 +251,18 @@ void MinCutMaxDisjoint::O_ds(const Ideal& X) {
         }
     }
 
-    // Invalidate prefix up to and including 'furthest'
+    // Invalidate prefix up to 'furthest'. 
+    // Here setting cutoff_ = furthest - 1 keeps 'furthest' as the next minimal index.
     cutoff_ = furthest - 1;
 }
 
-// ============================ Disjointness / Emptiness ===========================
-
+/**
+ * @brief Return true iff the two ideals induce edge-disjoint min-cuts.
+ *
+ * Implementation:
+ *   - Convert both ideals to min-cuts (edge-id sets) using cut_from_H_ideal().
+ *   - Intersect the two sets; return false if intersection is non-empty.
+ */
 bool MinCutMaxDisjoint::are_disjoint(const Ideal& I1,
                                      const Ideal& I2) const {
     MinCutSolution A = cut_from_H_ideal(I1);
@@ -166,12 +274,19 @@ bool MinCutMaxDisjoint::are_disjoint(const Ideal& I1,
     return inter.empty();
 }
 
+/**
+ * @brief True if no vertices remain after the current cutoff_.
+ */
 bool MinCutMaxDisjoint::is_empty() const {
     // No valid vertex remains in the TS suffix
     return (cutoff_ + 1) >= static_cast<int>(topo_TS_.size());
 }
 
-// Convert each ideal to the corresponding min-cut edge set
+/**
+ * @brief Convert each ideal to its corresponding min-cut (edge-id set).
+ *
+ * Simply maps each Ideal via cut_from_H_ideal().
+ */
 std::vector<MinCutSolution>
 MinCutMaxDisjoint::convert_to_solution_space(const std::vector<Ideal>& C) const {
     std::vector<MinCutSolution> out; out.reserve(C.size());
@@ -179,9 +294,20 @@ MinCutMaxDisjoint::convert_to_solution_space(const std::vector<Ideal>& C) const 
     return out;
 }
 
-// ============================ Helpers ============================================
+// ------------------------------------------------------------------------
+// Helpers
+// ------------------------------------------------------------------------
 
-// Keep only vertices reachable from s AND that can reach t; rebuild G_ compactly.
+/**
+ * @brief Prune input graph G_ to its s–t core: keep vertices reachable from s
+ *        and that can also reach t. Rebuilds G_ compactly with reindexed vertices.
+ *
+ * Complexity: O(n + m)
+ *
+ * Effects:
+ *   - s_, t_ are remapped to new indices.
+ *   - Edges not in the s–t core are dropped.
+ */
 void MinCutMaxDisjoint::prune_to_st_core() {
     const std::size_t n = num_vertices(G_);
     if (n == 0) return;
@@ -244,7 +370,16 @@ void MinCutMaxDisjoint::prune_to_st_core() {
     t_ = t_new;
 }
 
-// Extract saturated forward boundary of an ideal over SCC DAG using per-original-edge caches.
+/**
+ * @brief Convert an ideal over H into the corresponding min-cut δ(I) in the
+ *        original graph, returned as a set of edge IDs.
+ *
+ * Method:
+ *   - For each original edge id, check:
+ *       (1) edge is saturated (forward),
+ *       (2) tail SCC in_I_H == 1 and head SCC in_I_H == 0.
+ *     If both hold, include the id in the cut.
+ */
 MinCutSolution MinCutMaxDisjoint::cut_from_H_ideal(const Ideal& in_I_H) const {
     MinCutSolution S;
     S.edge_ids.reserve(edge_scc_pair_.size() / 8);
@@ -267,21 +402,22 @@ MinCutSolution MinCutMaxDisjoint::cut_from_H_ideal(const Ideal& in_I_H) const {
     return S;
 }
 
-// Build the *current* minimal ideal over H as the subsequence { TS[0, ..., cutoff_+1] }.
-// Return false if no valid nodes remain.
-bool MinCutMaxDisjoint::build_current_minimal_ideal_H(Ideal& out) const {
-    const int N = static_cast<int>(topo_TS_.size());
-    const int first = cutoff_ + 1;
-    // Ideal = all vertices with topo_pos in (0 .. cutoff_)
-    if (first >= N) return false;
-    out.assign(topo_pos_.size(), 0);
-    for (int i = 0; i <= first; ++i) {
-        out[ static_cast<int>(topo_TS_[i]) ] = 1;
-    }
-    return true;
-}
-
-// --- Max-flow that fills G_[e].residual on forward arcs ---------------------------
+/**
+ * @brief Build the working residual network and run push-relabel max-flow;
+ *        then copy forward residual capacities back into G_[e].residual.
+ *
+ * Construction:
+ *   - WR (working residual) has explicit reverse edges; we maintain:
+ *       * capacity map (WR)
+ *       * residual capacity map (WR)
+ *       * edge_index map for stable indexing
+ *       * reverse-edge map (edge → its reverse)
+ *       * mapping from WR forward-edge indices → original edges in G_
+ *
+ * After max-flow:
+ *   - For each WR edge that is a forward arc corresponding to some G_ edge,
+ *     copy its residual capacity into G_[ge].residual.
+ */
 void MinCutMaxDisjoint::run_maxflow_and_fill_residual() {
     using WR = boost::adjacency_list<
         boost::vecS, boost::vecS, boost::directedS,
