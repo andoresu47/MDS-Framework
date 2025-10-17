@@ -17,7 +17,7 @@ MinCutMaxDisjoint::MinCutMaxDisjoint(MC_G&& g, Vg s, Vg t)
 
 // ============================ build_initial_lattice ==============================
 
-LatticeG MinCutMaxDisjoint::build_initial_lattice() {
+LatticeDAG MinCutMaxDisjoint::build_initial_lattice() {
     // Find and delete from the input graph all nodes and arcs not on a path from s to t
     prune_to_st_core();
 
@@ -62,7 +62,7 @@ LatticeG MinCutMaxDisjoint::build_initial_lattice() {
     );
 
     // (4) Contract SCC to build compact representation
-    LatticeG H(k);
+    LatticeDAG H(k);
     for (auto e : boost::make_iterator_range(edges(Gp))) {
         int cu = scc_of_[boost::source(e, Gp)];
         int cv = scc_of_[boost::target(e, Gp)];
@@ -79,7 +79,7 @@ LatticeG MinCutMaxDisjoint::build_initial_lattice() {
         const long f  = c - rf;
         const bool is_sat_forward = (f == c);   // saturated forward (u->v)
 
-        // Remember this per-original-edge (you already do this elsewhere):
+        // Remember this per-original-edge:
         edge_scc_pair_[id]     = {cu, cv};
         edge_is_saturated_[id] = is_sat_forward ? 1 : 0;
 
@@ -112,39 +112,35 @@ LatticeG MinCutMaxDisjoint::build_initial_lattice() {
 
 // ============================ Oracles (in-place) =================================
 
-MinCutSolution MinCutMaxDisjoint::O_min(LatticeG& /*g*/) {
-    std::vector<char> in_I_H;
-    if (!build_current_minimal_ideal_H(in_I_H)) {
-        return MinCutSolution{}; // nothing left
+Ideal MinCutMaxDisjoint::O_min() {
+    Ideal I;
+    if (!build_current_minimal_ideal_H(I)) {
+        return Ideal{}; // nothing left
     }
-    return cut_from_H_ideal(in_I_H);
+    return I;
 }
 
-MinCutSolution MinCutMaxDisjoint::O_max(LatticeG& g) {
+Ideal MinCutMaxDisjoint::O_max() {
     // Find T0’s position
     const int N = static_cast<int>(topo_TS_.size());
     const int posT = N - 1;
 
     // Ideal = all vertices with topo_pos in (cutoff_ .. posT)
-    std::vector<char> in_I_H(topo_TS_.size(), 0);
+    Ideal I(topo_TS_.size(), 0);
     for (int i = 0; i < posT; ++i) {
-        in_I_H[ static_cast<int>(topo_TS_[i]) ] = 1;
+        I[ static_cast<int>(topo_TS_[i]) ] = 1;
     }
     
-    return cut_from_H_ideal(in_I_H);
+    return I;
 }
 
-void MinCutMaxDisjoint::O_ds(LatticeG& g, const MinCutSolution& /*X*/) {
-    // Reconstruct current minimal ideal X = { TS[cutoff_+1] }
-    std::vector<char> in_X;
-    if (!build_current_minimal_ideal_H(in_X))
-        return;
-
+void MinCutMaxDisjoint::O_ds(const Ideal& X) {
+    LatticeDAG& g = lattice_;
     int furthest = cutoff_;
 
     // For each u in X, examine *saturated* out-edges u->v in the lattice and push cutoff
-    for (std::size_t idx = 0; idx < in_X.size(); ++idx) {
-        if (!in_X[idx]) continue;
+    for (std::size_t idx = 0; idx < X.size(); ++idx) {
+        if (!X[idx]) continue;
         const Vh u = static_cast<Vh>(idx);
         for (auto eh : boost::make_iterator_range(out_edges(u, g))) {
             if (!g[eh].saturated) continue;
@@ -159,8 +155,10 @@ void MinCutMaxDisjoint::O_ds(LatticeG& g, const MinCutSolution& /*X*/) {
 
 // ============================ Disjointness / Emptiness ===========================
 
-bool MinCutMaxDisjoint::are_disjoint(const MinCutSolution& A,
-                                     const MinCutSolution& B) const {
+bool MinCutMaxDisjoint::are_disjoint(const Ideal& I1,
+                                     const Ideal& I2) const {
+    MinCutSolution A = cut_from_H_ideal(I1);
+    MinCutSolution B = cut_from_H_ideal(I2);                                    
     if (A.edge_ids.empty() || B.edge_ids.empty()) return true;
     std::vector<std::size_t> a=A.edge_ids, b=B.edge_ids, inter;
     std::sort(a.begin(),a.end()); std::sort(b.begin(),b.end());
@@ -168,9 +166,17 @@ bool MinCutMaxDisjoint::are_disjoint(const MinCutSolution& A,
     return inter.empty();
 }
 
-bool MinCutMaxDisjoint::is_empty(const LatticeG& /*g*/) const {
+bool MinCutMaxDisjoint::is_empty() const {
     // No valid vertex remains in the TS suffix
     return (cutoff_ + 1) >= static_cast<int>(topo_TS_.size());
+}
+
+// Convert each ideal to the corresponding min-cut edge set
+std::vector<MinCutSolution>
+MinCutMaxDisjoint::convert_to_solution_space(const std::vector<Ideal>& C) const {
+    std::vector<MinCutSolution> out; out.reserve(C.size());
+    for (const auto& I : C) out.push_back(cut_from_H_ideal(I));
+    return out;
 }
 
 // ============================ Helpers ============================================
@@ -214,7 +220,7 @@ void MinCutMaxDisjoint::prune_to_st_core() {
     for (std::size_t u = 0; u < n; ++u)
         if (reachS[u] && reachT[u]) old2new[u] = nn++;
 
-    // already core-only?
+    // already core-only
     if ((int)n == nn) return;
 
     // rebuild compact graph
@@ -239,7 +245,7 @@ void MinCutMaxDisjoint::prune_to_st_core() {
 }
 
 // Extract saturated forward boundary of an ideal over SCC DAG using per-original-edge caches.
-MinCutSolution MinCutMaxDisjoint::cut_from_H_ideal(const std::vector<char>& in_I_H) const {
+MinCutSolution MinCutMaxDisjoint::cut_from_H_ideal(const Ideal& in_I_H) const {
     MinCutSolution S;
     S.edge_ids.reserve(edge_scc_pair_.size() / 8);
 
@@ -261,16 +267,16 @@ MinCutSolution MinCutMaxDisjoint::cut_from_H_ideal(const std::vector<char>& in_I
     return S;
 }
 
-// Build the *current* minimal ideal over H as the singleton { TS[cutoff_+1] }.
+// Build the *current* minimal ideal over H as the subsequence { TS[0, ..., cutoff_+1] }.
 // Return false if no valid nodes remain.
-bool MinCutMaxDisjoint::build_current_minimal_ideal_H(std::vector<char>& in_I_H) const {
+bool MinCutMaxDisjoint::build_current_minimal_ideal_H(Ideal& out) const {
     const int N = static_cast<int>(topo_TS_.size());
     const int first = cutoff_ + 1;
     // Ideal = all vertices with topo_pos in (0 .. cutoff_)
-    in_I_H.assign(topo_pos_.size(), 0);
     if (first >= N) return false;
+    out.assign(topo_pos_.size(), 0);
     for (int i = 0; i <= first; ++i) {
-        in_I_H[ static_cast<int>(topo_TS_[i]) ] = 1;
+        out[ static_cast<int>(topo_TS_[i]) ] = 1;
     }
     return true;
 }

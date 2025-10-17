@@ -24,12 +24,16 @@ public:
     ToyLattice build_initial_lattice() override;
 
     // Oracles over the current (mutated) lattice
-    ToySolution O_min(ToyLattice& g) override;          // smallest active vertex
-    ToySolution O_max(ToyLattice& g) override;          // largest  active vertex
-    void        O_ds (ToyLattice& g, const ToySolution& s) override; // deactivate chosen elements
+    ToySolution O_min() override;          // smallest active vertex
+    ToySolution O_max() override;          // largest  active vertex
+    void        O_ds (const ToySolution& s) override; // deactivate chosen elements
 
     bool        are_disjoint(const ToySolution& a, const ToySolution& b) const override;
 
     // Define “empty” as: no active vertices left
-    bool        is_empty(const ToyLattice& g) const override;
+    bool        is_empty() const override;
+
+    // Convert internal ideals to external cut solutions
+    std::vector<ToySolution>
+    convert_to_solution_space(const std::vector<ToySolution>& C) const override;
 };

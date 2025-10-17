@@ -7,7 +7,8 @@ ToyLattice ToyPowersetMDS::build_initial_lattice() {
     return g;
 }
 
-ToySolution ToyPowersetMDS::O_min(ToyLattice& g) {
+ToySolution ToyPowersetMDS::O_min() {
+    ToyLattice& g = lattice_;
     ToySolution s;
     for (auto v : boost::make_iterator_range(vertices(g))) {
         if (g[v].active) { s.elems.push_back(static_cast<std::size_t>(v)); break; }
@@ -15,7 +16,8 @@ ToySolution ToyPowersetMDS::O_min(ToyLattice& g) {
     return s; // empty if none active
 }
 
-ToySolution ToyPowersetMDS::O_max(ToyLattice& g) {
+ToySolution ToyPowersetMDS::O_max() {
+    ToyLattice& g = lattice_;
     ToySolution s;
     std::size_t last = static_cast<std::size_t>(-1);
     for (auto v : boost::make_iterator_range(vertices(g))) {
@@ -25,7 +27,8 @@ ToySolution ToyPowersetMDS::O_max(ToyLattice& g) {
     return s;
 }
 
-void ToyPowersetMDS::O_ds(ToyLattice& g, const ToySolution& s) {
+void ToyPowersetMDS::O_ds(const ToySolution& s) {
+    ToyLattice& g = lattice_;
     // Shrink in place: mark chosen elements inactive so future solutions can’t reuse them
     for (auto id : s.elems) {
         if (id < num_vertices(g)) g[static_cast<ToyLattice::vertex_descriptor>(id)].active = false;
@@ -41,7 +44,13 @@ bool ToyPowersetMDS::are_disjoint(const ToySolution& a, const ToySolution& b) co
     return inter.empty();
 }
 
-bool ToyPowersetMDS::is_empty(const ToyLattice& g) const {
+bool ToyPowersetMDS::is_empty() const {
+    const ToyLattice& g = lattice_;
     for (auto v : boost::make_iterator_range(vertices(g))) if (g[v].active) return false;
     return true;
 }
+
+std::vector<ToySolution>
+    ToyPowersetMDS::convert_to_solution_space(const std::vector<ToySolution>& C) const {
+        return std::vector<ToySolution>(C.begin(), C.end());
+    }

@@ -72,7 +72,7 @@ int main(int argc, char** argv) {
 
     // Build compact lattice (this runs max-flow internally)
     MinCutMaxDisjoint solver(std::move(G), static_cast<Vg>(s), static_cast<Vg>(t));
-    LatticeG L = solver.build_initial_lattice();  
+    LatticeDAG L = solver.build_initial_lattice();  
 
     std::cout << "# Finding max-disjoint minimum s–t cuts...\n";
     auto cuts = solver.find_max_disjoint();

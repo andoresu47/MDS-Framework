@@ -1,102 +1,71 @@
 #pragma once
-#include <boost/graph/graph_traits.hpp>
-#include <boost/graph/graph_concepts.hpp>
-#include <boost/range/iterator_range.hpp>
-#include <concepts>
 #include <vector>
+#include <cstddef>
 
-// --------------------- Minimal concept: we only need a Boost graph ---------------------
-template<class L>
-concept LatticeGraphModel =
-    requires(L& g,
-             const L& cg,
-             typename boost::graph_traits<L>::vertex_descriptor v,
-             typename boost::graph_traits<L>::edge_descriptor   e)
-{
-    vertices(cg); edges(cg); out_edges(v, cg); // basic traversal
-    // No property-map requirements here; subclasses can use any internal properties they like.
-};
-
-// --------------------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // MaxDisjointSolutionsFramework
-// --------------------------------------------------------------------------------------
-// - Subclasses implement the oracles that *mutate* the lattice graph in place:
-//     * O_min(L&):   compute the "bottom" solution in the current state of L
-//     * O_max(L&):   compute the "top"    solution in the current state of L
-//     * O_ds (L&, S):shrink L in-place so only disjoint successors (w.r.t. S) remain
-// - The framework only orchestrates Algorithm 1 of the paper.
-// - Disjointness is decided by are_disjoint(A,B).
-// --------------------------------------------------------------------------------------
-template<LatticeGraphModel LatticeGraph, class Solution>
+//
+// Templated over:
+//   - LatticeRepresentation: a (usually compact) data structure representing the lattice. 
+//   - InternalSolution: what the oracles manipulate (e.g., an ideal)
+//   - ExternalSolution: what you want returned to the caller (e.g., a cut)
+//       defaults to InternalSolution (identity)
+// -----------------------------------------------------------------------------
+template<class LatticeRepresentation, class InternalSolution, class ExternalSolution = InternalSolution>
 class MaxDisjointSolutionsFramework {
 public:
-    using L = LatticeGraph;
-    using V = typename boost::graph_traits<L>::vertex_descriptor;
-    using E = typename boost::graph_traits<L>::edge_descriptor;
+    using L = LatticeRepresentation;
+    using ISol = InternalSolution;
+    using ESol = ExternalSolution;
 
     virtual ~MaxDisjointSolutionsFramework() = default;
 
-    // Build the initial lattice graph (already reduced/compact if you wish).
-    // You can attach any vertex/edge properties (e.g., { bool active; }) and
-    // use them inside the oracles to ignore “scrapped” parts.
+    // Build initial lattice representation and store it in lattice_.
     virtual L build_initial_lattice() = 0;
 
-    // Oracles operating on the *current* lattice, in-place:
-    virtual Solution O_min(L& g) = 0;                     // bottom element of current sublattice
-    virtual Solution O_max(L& g) = 0;                     // top    element of current sublattice
-    virtual void     O_ds (L& g, const Solution& s) = 0;  // shrink g to disjoint successors of s
-    virtual bool     are_disjoint(const Solution& a, const Solution& b) const = 0;
+    // Oracles act on the framework's internal state (including lattice_).
+    virtual ISol O_min() = 0;                      // bottom element of current sublattice
+    virtual ISol O_max() = 0;                      // top element of current sublattice
+    virtual void O_ds(const ISol& s) = 0;          // shrink to disjoint successors of s
 
-    // Optional: subclasses can override if they track a more meaningful emptiness notion
-    virtual bool is_empty(const L& g) const {
-        // Default: empty if the graph has no vertices (override if you “deactivate” instead of deleting)
-        return num_vertices(g) == 0;
-    }
+    // Disjointness test in the oracle's internal space.
+    virtual bool are_disjoint(const ISol& a, const ISol& b) const = 0;
 
-    // ----------------------------- Unbounded Algorithm 1 -----------------------------
-    // Iterate minimal solutions with O_ds shrink, stop when intersecting Xz := O_max(P); include final X.
-    std::vector<Solution> find_max_disjoint() {
+    // Progress notion for the current sublattice (e.g., "no valid vertices left").
+    virtual bool is_empty() const = 0;
+
+    // Conversion from internal to external solution space, if not used, just implement identity.
+    virtual std::vector<ESol>
+    convert_to_solution_space(const std::vector<ISol>& C) const = 0;
+
+    // Algorithm
+    std::vector<ESol> find_max_disjoint(int k = -1) {
+        const bool bounded = (k >= 0);
         lattice_ = build_initial_lattice();
-        if (is_empty(lattice_)) return {};
+        if (is_empty()) return {};
 
-        const Solution Xz = O_max(lattice_);  // fixed guard from the initial state
-        std::vector<Solution> C; C.reserve(8);
+        ISol Xz = O_max();
+        std::vector<ISol> Cint; Cint.reserve(8);
 
-        Solution X = O_min(lattice_);
+        ISol X = O_min();
+        O_ds(X);                        // restrict to disjoint successors of X inside current state
 
-        while ( are_disjoint(X, Xz) ) {
-            C.push_back(X);
-            // shrink to disjoint successors *in place*
-            O_ds(lattice_, X);
-            if (is_empty(lattice_)) break;     // no successors left
-            X = O_min(lattice_);
+        while (are_disjoint(X, Xz)) {
+            Cint.push_back(X);
+            if (bounded && static_cast<int>(Cint.size()) == k)
+                return convert_to_solution_space(Cint);
+            if (is_empty()) break;
+            X = O_min();
+            O_ds(X);
         }
-        C.push_back(X); // final (possibly intersecting) solution
-        return C;
-    }
 
-    // ----------------------------- k-bounded variant --------------------------------
-    std::vector<Solution> find_max_disjoint(int k) {
-        std::vector<Solution> C;
-        if (k <= 0) return C;
+        // Add the final X that intersects Xz
+        if (!bounded || static_cast<int>(Cint.size()) < k)
+            Cint.push_back(X);
 
-        lattice_ = build_initial_lattice();
-        if (is_empty(lattice_)) return C;
-
-        const Solution Xz = O_max(lattice_);
-        Solution X = O_min(lattice_);
-
-        while ( are_disjoint(X, Xz) ) {
-            C.push_back(X);
-            if ((int)C.size() >= k) return C;
-            O_ds(lattice_, X);
-            if (is_empty(lattice_)) break;
-            X = O_min(lattice_);
-        }
-        if ((int)C.size() < k) C.push_back(X);
-        return C;
+        return convert_to_solution_space(Cint);
     }
 
 protected:
-    L lattice_;  // owned, mutates in place through oracles
+    L lattice_;   // owned lattice representation
 };
