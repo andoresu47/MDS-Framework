@@ -1,9 +1,9 @@
 # Max-Disjoint Solutions Framework
-This repository provides a generic C++20 framework for computing sets of pairwise disjoint feasible solutions in combinatorial-optimization problems whose feasible sets form a distributive lattice.
+This repository provides a generic C++17 framework for computing sets of pairwise disjoint feasible solutions in combinatorial-optimization problems whose feasible sets form a distributive lattice.
 It implements the general algorithmic scheme of “Max-Disjoint Solutions” introduced in [dBMS25], allowing different optimization problems (e.g., minimum s-t cut & stable matching) to plug into the same high-level interface via three problem-specific oracles. 
 
 ## Overview
-The project defines an extensible base class `MaxDisjointSolutionsFramework<LatticeGraph, Solution>` implemented with the **Boost Graph Library (BGL)**.  
+The project defines an extensible base class `MaxDisjointSolutionsFramework<LatticeGraph, InternalSolution, ExternalSolution>`.  
 
 Each subclass must specify:  
 - **`O_min(L*)`** – returns the minimal solution of the current sublattice `L*`,  
@@ -12,7 +12,7 @@ Each subclass must specify:
 
 The framework then executes the generic Max-Disjoint algorithm—iteratively selecting minimal solutions and shrinking the current sublattice—until no further disjoint solutions exist.
 
-Two example subclasses are included:
+Two example subclasses are included, implemented with the **Boost Graph Library (BGL)**:
 - **`ToyPowersetMDS`** – a minimal powerset-based mock problem used for unit testing.  
 - **`MinCutMaxDisjoint`** – a concrete implementation for the *Minimum s-t Cut* problem. 
 
@@ -39,7 +39,7 @@ Two example subclasses are included:
 
 ## Requirements
 - **CMake ≥ 3.22**
-- **C++20-compatible compiler** 
+- **C++17-compatible compiler** 
 - **Boost ≥ 1.89** (header-only components suffice)
 
 ## Building
@@ -69,7 +69,7 @@ or directly:
 ## Extending the Framework
 To add a new problem **X**:
 1. Create a subclass class `XMaxDisjoint : public MaxDisjointSolutionsFramework<...>`.
-2. Implement `build_initial_lattice()`, `O_min()`, `O_max()`, `O_ds()`, and `are_disjoint()`.
+2. Implement `build_initial_lattice()`, `O_min()`, `O_max()`, `O_ds()`, `are_disjoint()`, `is_empty()`, and `convert_to_solution_space`.
 3. Compile and test using the same CMake structure.
 
 ## References
