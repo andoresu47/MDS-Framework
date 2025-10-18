@@ -85,7 +85,7 @@ struct LEdge {
  * reachability between SCCs. 
  */
 using LatticeDAG = boost::adjacency_list<
-    boost::vecS, boost::vecS, boost::directedS,
+    boost::vecS, boost::vecS, boost::bidirectionalS,
     boost::no_property,
     LEdge
 >;
@@ -254,7 +254,6 @@ private:
     std::vector<char> edge_is_saturated_;               ///< whether original edge was saturated
 
     // --- Oracle runtime state ---
+    std::vector<char> invalid_; ///< Nodes no longer part of the lattice (valid nodes define a sublattice)
     std::vector<Vh> topo_TS_;   ///< Topological order of SCC DAG vertices
-    std::vector<int> topo_pos_; ///< vertex → index in topo_TS_
-    int cutoff_ = -1;           ///< Position of current cutoff (invalid prefix in topo_TS_)
 };

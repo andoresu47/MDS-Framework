@@ -16,19 +16,19 @@
  *   6) Mark H-edges that correspond to saturated original edges; fill caches that
  *      map each original edge to the pair (SCC(u), SCC(v)) and whether it is saturated.
  *   7) Compute a topological order of H and cache position indices.
- *   8) Reset the oracle’s cutoff_ (the invalid prefix in topo order).
+ *   8) Initialize all nodes as valid, except for scc of source node.
  * 
  *  Note: build_initial_lattice() might be moved to its own independent implementation. 
  *
  * Oracles:
  *   - O_min():    returns the current minimal ideal (as a bitvector over SCCs).
  *   - O_max():    returns the maximal ideal in H \ {SCC containing t}.
- *   - O_ds(X):    advances cutoff_ by looking at saturated out-edges from X to ensure
- *                 future ideals are disjoint from X’s induced cut.
+ *   - O_ds(X):    invalidate endpoints (and their predecessors) of saturated out-edges of X 
+ *                 to ensure future ideals are disjoint from X’s induced cut.
  * 
  * Helpers:
  *   - are_disjoint(): checks edge-disjointness by converting ideals to cuts and intersecting.
- *   - is_empty(): true iff cutoff_ invalidates all remaining topo positions.
+ *   - is_empty(): true iff the target node is marked invalid.
  *
  * Conversion:
  *   - convert_to_solution_space(): maps a list of ideals to the corresponding min-cuts
@@ -73,7 +73,7 @@ MinCutMaxDisjoint::MinCutMaxDisjoint(MC_G&& g, Vg s, Vg t)
  *  5) Compute SCCs of G' and their condensation DAG H.
  *  6) Mark which H-edges correspond to saturated original edges and fill per-edge caches.
  *  7) Compute a topological order topo_TS_ and the index map topo_pos_.
- *  8) Reset cutoff_ to “empty invalid prefix”.
+ *  8) Initialize all nodes as valid, except for scc of source node.
  *
  * @return The built SCC-DAG H (stored in the framework’s lattice_ by the parent class' algorithm).
  */
@@ -159,14 +159,12 @@ LatticeDAG MinCutMaxDisjoint::build_initial_lattice() {
         topo_TS_.assign(rev.rbegin(), rev.rend());
     }
 
-     // Position of each SCC vertex in topo_TS_
-    topo_pos_.assign(k, -1);
-    for (int i = 0; i < (int)topo_TS_.size(); ++i) {
-        topo_pos_[ static_cast<int>(topo_TS_[i]) ] = i;
-    }
+    // Identify S0 and T0 in H
+    scc_S_ = scc_of_[s_];
+    scc_T_ = scc_of_[t_];
 
-    // Reset invalid prefix: no elements have been excluded yet.
-    cutoff_ = -1;
+    invalid_.assign(num_vertices(H), 0);
+    invalid_[scc_S_] = 1;
 
     return H;   // Framework will store this in lattice_
 }
@@ -179,24 +177,18 @@ LatticeDAG MinCutMaxDisjoint::build_initial_lattice() {
  * @brief Return the current minimal ideal as a bitvector over SCC vertices.
  *
  * Convention used here:
- *   - topo_TS_ is a forward topological order of H.
- *   - cutoff_ marks an "invalid prefix" [0..cutoff_-1]; the first valid index is cutoff_+1.
- *   - This implementation returns an ideal that includes all vertices up to index `first`,
- *     where `first = cutoff_ + 1`. (I.e., a prefix-closed downset.)
+ *   - invalid_ marks all nodes that are no longer part of our lattice representation.
+ *   - Valid nodes define a sublattice of the original lattice.
+ *   - This implementation returns the ideal of only invalid nodes; 
+ *      that is, the bottom/empty ideal of the sublattice. 
  *
  * @return Ideal bitvector; empty if nothing remains.
  */
 Ideal MinCutMaxDisjoint::O_min() {
     const int N = static_cast<int>(topo_TS_.size());
-    const int first = cutoff_ + 1;
-
-    // Ideal = all vertices with topo_pos in (0 .. cutoff_)
-    Ideal I(topo_TS_.size(), 0);
-    if (first >= N) return Ideal{}; // nothing left
-    for (int i = 0; i <= first; ++i) {
-        I[ static_cast<int>(topo_TS_[i]) ] = 1;
-    }
-    return I;
+    if (topo_TS_[N - 1]) return Ideal{}; // nothing left
+    // Ideal = all invalid vertices
+    return invalid_;
 }
 
 /**
@@ -214,7 +206,7 @@ Ideal MinCutMaxDisjoint::O_max() {
     const int N = static_cast<int>(topo_TS_.size());
     const int posT = N - 1;
 
-    // Ideal = all vertices with topo_pos in (cutoff_ .. posT)
+    // Ideal = all vertices with topo_pos in (0 .. posT)
     Ideal I(topo_TS_.size(), 0);
     for (int i = 0; i < posT; ++i) {
         I[ static_cast<int>(topo_TS_[i]) ] = 1;
@@ -224,36 +216,46 @@ Ideal MinCutMaxDisjoint::O_max() {
 }
 
 /**
- * @brief Disjoint-successor oracle: advance cutoff_ using saturated out-edges of X.
+ * @brief Disjoint-successor oracle: invalidate endpoints (and their predecessors) of saturated out-edges of X.
  *
  * Intuition:
  *   - The min-cut induced by ideal X uses saturated boundary edges u→v with u in X, v not in X.
- *   - Any future ideal that includes such v (or earlier in topo) could reuse those edges,
- *     violating edge-disjointness.
- *   - We scan all saturated out-edges from vertices in X and compute the furthest topo index
- *     among their targets. Then we invalidate (exclude) the prefix up to that position by
- *     setting cutoff_ accordingly.
+ *   - Any future ideal that does not include such v reuses those edges, violating edge-disjointness.
+ *   - We scan all saturated out-edges from vertices in X, invalidate them, and backwards-propagate
+ *     until no more nodes can be invalidated.
  *
  * @param X Ideal over SCC vertices (bitvector).
  */
 void MinCutMaxDisjoint::O_ds(const Ideal& X) {
-    LatticeDAG& g = lattice_;
-    int furthest = cutoff_;
+    LatticeDAG& H = lattice_;
+    
+    // Identify saturated out-neighbors of X and invalidate them
+    std::queue<Vh> q;
+    const std::size_t N = invalid_.size();
 
-    // For each u in X, examine *saturated* out-edges u->v in the lattice and push cutoff
-    for (std::size_t idx = 0; idx < X.size(); ++idx) {
-        if (!X[idx]) continue;
-        const Vh u = static_cast<Vh>(idx);
-        for (auto eh : boost::make_iterator_range(out_edges(u, g))) {
-            if (!g[eh].saturated) continue;
-            const Vh v = target(eh, g);
-            furthest = std::max(furthest, topo_pos_[ static_cast<int>(v) ]);
+    for (std::size_t u = 0; u < N; ++u) {
+        if (!X[u]) continue;
+        for (auto eh : boost::make_iterator_range(out_edges(static_cast<Vh>(u), H))) {
+            if (!H[eh].saturated) continue;
+            Vh v = boost::target(eh, H);
+            if (!X[v]) {
+                invalid_[v] = 1;
+                q.push(v);      // Keep track of newly marked nodes
+            }
         }
     }
 
-    // Invalidate prefix up to 'furthest'. 
-    // Here setting cutoff_ = furthest - 1 keeps 'furthest' as the next minimal index.
-    cutoff_ = furthest - 1;
+    // Propagate down-closure along predecessors of saturated out-neighbors
+    while (!q.empty()) {
+        Vh x = q.front(); q.pop();
+        for (auto pe : boost::make_iterator_range(in_edges(x, H))) {
+            Vh p = source(pe, H);
+            if (!invalid_[p]) {
+                invalid_[p] = 1;
+                q.push(p);
+            }
+        }
+    }
 }
 
 /**
@@ -275,11 +277,11 @@ bool MinCutMaxDisjoint::are_disjoint(const Ideal& I1,
 }
 
 /**
- * @brief True if no vertices remain after the current cutoff_.
+ * @brief True if target node is marked invalid.
  */
 bool MinCutMaxDisjoint::is_empty() const {
-    // No valid vertex remains in the TS suffix
-    return (cutoff_ + 1) >= static_cast<int>(topo_TS_.size());
+    const int N = static_cast<int>(topo_TS_.size());
+    return (topo_TS_[N - 1]);
 }
 
 /**
@@ -320,7 +322,7 @@ void MinCutMaxDisjoint::prune_to_st_core() {
         while (!q.empty()) {
             Vg u = q.front(); q.pop();
             for (auto e : boost::make_iterator_range(out_edges(u, G_))) {
-                Vg v = target(e, G_);
+                Vg v = boost::target(e, G_);
                 if (!reachS[v]) { reachS[v] = 1; q.push(v); }
             }
         }
