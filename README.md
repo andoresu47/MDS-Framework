@@ -3,7 +3,7 @@ This repository provides a generic C++17 framework for computing sets of pairwis
 It implements the general algorithmic scheme of “Max-Disjoint Solutions” introduced in [dBMS25], allowing different optimization problems (e.g., minimum s-t cut & stable matching) to plug into the same high-level interface via three problem-specific oracles. 
 
 <p align="center">
-  <img src="output/mds_anim.gif" alt="Max-Disjoint Minimum s-t Cuts" width="800"/><br/>
+  <img src="output/mds_anim.gif_loop" alt="Max-Disjoint Minimum s-t Cuts" width="800"/><br/>
   <em>Example: Max-Disjoint Minimum s-t Cuts</em>
 </p>
 
