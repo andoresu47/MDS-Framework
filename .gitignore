@@ -8,8 +8,9 @@
 /build/
 /bin/
 
-# Ignore folder of main codes
+# Ignore folder of main codes / output files
 /mains/
+/output/
 
 # Ignore private local configuration
 /cmake/local.cmake

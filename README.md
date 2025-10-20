@@ -13,7 +13,7 @@ The project defines an extensible base class `MaxDisjointSolutionsFramework<Latt
 Each subclass must specify:  
 - **`O_min(L*)`** – returns the minimal solution of the current sublattice `L*`,  
 - **`O_max(L*)`** – returns the maximal solution,  
-- **`O_ds(L*, S)`** – restricts the current sublattice `L*` to the disjoint successors of `S`.  
+- **`O_ds(L*, S)`** – shrinks the lattice `L*` to the sublattice of disjoint successors of `S`.  
 
 The framework then executes the generic Max-Disjoint algorithm—iteratively selecting minimal solutions and shrinking the current sublattice—until no further disjoint solutions exist.
 
@@ -34,6 +34,7 @@ Two example subclasses are included, implemented with the **Boost Graph Library 
 │   └── local.cmake                     # File with local env variables (e.g., Boost path)
 ├── include/                            # Folder for all header files
 ├── input/                              # Folder for some test input files
+├── output/                             # Folder for some visualization files
 ├── src/                                # Folder for all source files
 │   └── main.cpp                        # Main entry of the application
 ├── test/                               # Test folder for all unit tests
